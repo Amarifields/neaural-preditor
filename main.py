@@ -1,192 +1,153 @@
 import numpy as np
-import math
+import argparse
 import random
 from typing import List, Tuple
 
+class MinMaxScaler:
+    def __init__(self):
+        self.min_ = None
+        self.max_ = None
+
+    def fit(self, X: np.ndarray) -> None:
+        self.min_ = X.min(axis=0, keepdims=True)
+        self.max_ = X.max(axis=0, keepdims=True)
+        same = (self.max_ - self.min_) == 0
+        self.max_[same] = self.min_[same] + 1.0
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        return (X - self.min_) / (self.max_ - self.min_)
+
+    def fit_transform(self, X: np.ndarray) -> np.ndarray:
+        self.fit(X)
+        return self.transform(X)
+
 class NeuralPredictor:
-    def __init__(self, input_size: int = 3, hidden_size: int = 5, output_size: int = 1):
+    def __init__(self, input_size: int = 3, hidden_size: int = 8, output_size: int = 1, learning_rate: float = 0.01, epochs: int = 1000, seed: int = 42):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.output_size = output_size
-        
-        self.weights_input_hidden = np.random.randn(input_size, hidden_size) * 0.1
-        self.weights_hidden_output = np.random.randn(hidden_size, output_size) * 0.1
-        
-        self.bias_hidden = np.zeros((1, hidden_size))
-        self.bias_output = np.zeros((1, output_size))
-        
-        self.learning_rate = 0.01
-        self.epochs = 1000
+        self.learning_rate = learning_rate
+        self.epochs = epochs
+        rng = np.random.default_rng(seed)
+        limit_ih = np.sqrt(6.0 / (input_size + hidden_size))
+        limit_ho = np.sqrt(6.0 / (hidden_size + output_size))
+        self.W_ih = rng.uniform(-limit_ih, limit_ih, (input_size, hidden_size)).astype(np.float64)
+        self.W_ho = rng.uniform(-limit_ho, limit_ho, (hidden_size, output_size)).astype(np.float64)
+        self.b_h = np.zeros((1, hidden_size), dtype=np.float64)
+        self.b_o = np.zeros((1, output_size), dtype=np.float64)
 
-    def normalize_data(self, data: List[float]) -> List[float]:
-        if not data:
-            return []
-        
-        min_val = min(data)
-        max_val = max(data)
-        
-        if max_val == min_val:
-            return [0.5] * len(data)
-        
-        normalized = []
-        for value in data:
-            norm_val = (value - min_val) / (max_val - min_val)
-            normalized.append(norm_val)
-        
-        return normalized
+    @staticmethod
+    def sigmoid(x: np.ndarray) -> np.ndarray:
+        x_clip = np.clip(x, -500, 500)
+        return 1.0 / (1.0 + np.exp(-x_clip))
 
-    def sigmoid(self, x: float) -> float:
-        try:
-            if x > 500:
-                return 1.0
-            elif x < -500:
-                return 0.0
-            return 1 / (1 + math.exp(-x))
-        except OverflowError:
-            return 1.0 if x > 0 else 0.0
+    @staticmethod
+    def sigmoid_derivative_from_output(s: np.ndarray) -> np.ndarray:
+        return s * (1.0 - s)
 
-    def sigmoid_derivative(self, x: float) -> float:
-        s = self.sigmoid(x)
-        return s * (1 - s)
+    def forward(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        h_pre = X @ self.W_ih + self.b_h
+        h_act = self.sigmoid(h_pre)
+        o_pre = h_act @ self.W_ho + self.b_o
+        o_act = self.sigmoid(o_pre)
+        return h_pre, h_act, o_pre, o_act
 
-    def forward_pass(self, inputs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        hidden_input = np.dot(inputs, self.weights_input_hidden) + self.bias_hidden
-        hidden_output = np.array([[self.sigmoid(x) for x in hidden_input[0]]])
-        
-        output_input = np.dot(hidden_output, self.weights_hidden_output) + self.bias_output
-        output = np.array([[self.sigmoid(x) for x in output_input[0]]])
-        
-        return hidden_output, output
-
-    def train(self, training_data: List[List[float]], targets: List[float]):
+    def train(self, X: np.ndarray, y: np.ndarray, quiet: bool = False, log_every: int = 100) -> None:
+        n = X.shape[0]
         for epoch in range(self.epochs):
-            total_error = 0
-            
-            for i, (inputs, target) in enumerate(zip(training_data, targets)):
-                inputs_np = np.array([inputs])
-                target_np = np.array([[target]])
-                
-                hidden_output, output = self.forward_pass(inputs_np)
-                
-                error = target_np - output
-                total_error += np.mean(np.abs(error))
-                
-                output_delta = error * np.array([[self.sigmoid_derivative(x) for x in output[0]]])
-                
-                hidden_error = np.dot(output_delta, self.weights_hidden_output.T)
-                hidden_delta = hidden_error * np.array([[self.sigmoid_derivative(x) for x in hidden_output[0]]])
-                
-                self.weights_hidden_output += self.learning_rate * np.dot(hidden_output.T, output_delta)
-                self.weights_input_hidden += self.learning_rate * np.dot(inputs_np.T, hidden_delta)
-                
-                self.bias_output += self.learning_rate * output_delta
-                self.bias_hidden += self.learning_rate * hidden_delta
-            
-            if epoch % 100 == 0:
-                avg_error = total_error / len(training_data)
-                print(f"Epoch {epoch}, Average Error: {avg_error:.6f}")
+            _, h_act, _, o_act = self.forward(X)
+            error = o_act - y
+            o_delta = error * self.sigmoid_derivative_from_output(o_act)
+            h_delta = (o_delta @ self.W_ho.T) * self.sigmoid_derivative_from_output(h_act)
+            grad_W_ho = (h_act.T @ o_delta) / n
+            grad_W_ih = (X.T @ h_delta) / n
+            grad_b_o = o_delta.mean(axis=0, keepdims=True)
+            grad_b_h = h_delta.mean(axis=0, keepdims=True)
+            self.W_ho -= self.learning_rate * grad_W_ho
+            self.W_ih -= self.learning_rate * grad_W_ih
+            self.b_o -= self.learning_rate * grad_b_o
+            self.b_h -= self.learning_rate * grad_b_h
+            if not quiet and (epoch % log_every == 0 or epoch == self.epochs - 1):
+                loss = np.mean(np.abs(error))
+                print(f"epoch {epoch} mae {loss:.6f}")
 
-    def predict(self, inputs: List[float]) -> float:
-        if len(inputs) != self.input_size:
-            raise ValueError(f"Expected {self.input_size} inputs, got {len(inputs)}")
-        
-        inputs_np = np.array([inputs])
-        _, output = self.forward_pass(inputs_np)
-        return output[0][0]
+    def predict(self, X_row: List[float]) -> float:
+        X = np.asarray([X_row], dtype=np.float64)
+        _, _, _, o_act = self.forward(X)
+        return float(o_act[0, 0])
 
-    def batch_predict(self, input_batch: List[List[float]]) -> List[float]:
-        predictions = []
-        for inputs in input_batch:
-            pred = self.predict(inputs)
-            predictions.append(pred)
-        return predictions
+    def batch_predict(self, X: np.ndarray) -> np.ndarray:
+        _, _, _, o_act = self.forward(np.asarray(X, dtype=np.float64))
+        return o_act.ravel()
 
-def generate_sample_data(num_samples: int = 50) -> Tuple[List[List[float]], List[float]]:
-    random.seed(42)
-    np.random.seed(42)
-    
-    data = []
-    targets = []
-    
-    for _ in range(num_samples):
-        x1 = random.uniform(0, 10)
-        x2 = random.uniform(0, 10)
-        x3 = random.uniform(0, 10)
-        
-        target = (x1 * 0.3 + x2 * 0.5 + x3 * 0.2) / 10.0
-        target = min(max(target, 0), 1)
-        
-        data.append([x1, x2, x3])
-        targets.append(target)
-    
-    return data, targets
+def generate_sample_data(num_samples: int, input_size: int, seed: int) -> Tuple[np.ndarray, np.ndarray]:
+    random.seed(seed)
+    rng = np.random.default_rng(seed)
+    X = rng.uniform(0.0, 10.0, size=(num_samples, input_size)).astype(np.float64)
+    weights = np.linspace(0.2, 0.6, num=input_size, dtype=np.float64)
+    weights = weights / weights.sum()
+    y = (X * weights).sum(axis=1, keepdims=True) / 10.0
+    y = np.clip(y, 0.0, 1.0)
+    return X, y
 
-def main():
-    print("Neural Predictor Initialization")
-    print("=" * 40)
-    
-    predictor = NeuralPredictor(input_size=3, hidden_size=5, output_size=1)
-    
-    print("Generating training data...")
-    training_data, training_targets = generate_sample_data(50)
-    
-    print("Normalizing training data...")
-    normalized_data = []
-    for sample in training_data:
-        normalized_sample = predictor.normalize_data(sample)
-        normalized_data.append(normalized_sample)
-    
-    print("Training neural network...")
-    predictor.train(normalized_data, training_targets)
-    
-    print("\nGenerating test data...")
-    test_data, test_targets = generate_sample_data(10)
-    
-    print("Making predictions...")
-    print("\nTest Results:")
-    print("Input\t\t\tTarget\t\tPrediction\t\tError")
-    print("-" * 60)
-    
-    total_error = 0
-    for i, (inputs, target) in enumerate(zip(test_data, test_targets)):
-        normalized_inputs = predictor.normalize_data(inputs)
-        prediction = predictor.predict(normalized_inputs)
-        error = abs(target - prediction)
-        total_error += error
-        
-        print(f"{inputs[0]:.2f}, {inputs[1]:.2f}, {inputs[2]:.2f}\t{target:.4f}\t\t{prediction:.4f}\t\t{error:.4f}")
-    
-    avg_error = total_error / len(test_data)
-    print(f"\nAverage Prediction Error: {avg_error:.6f}")
-    
-    print("\nInteractive Mode:")
-    print("Enter 3 numbers separated by spaces (or 'quit' to exit):")
-    
+def run_cli() -> None:
+    p = argparse.ArgumentParser(prog="neural-predictor")
+    p.add_argument("--input-size", type=int, default=3)
+    p.add_argument("--hidden-size", type=int, default=8)
+    p.add_argument("--output-size", type=int, default=1)
+    p.add_argument("--epochs", type=int, default=1000)
+    p.add_argument("--lr", type=float, default=0.01)
+    p.add_argument("--train-samples", type=int, default=200)
+    p.add_argument("--test-samples", type=int, default=50)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--quiet", action="store_true")
+    p.add_argument("--no-interactive", action="store_true")
+    args = p.parse_args()
+    X_train, y_train = generate_sample_data(args.train_samples, args.input_size, args.seed)
+    X_test, y_test = generate_sample_data(args.test_samples, args.input_size, args.seed + 1)
+    scaler = MinMaxScaler()
+    X_train_norm = scaler.fit_transform(X_train)
+    X_test_norm = scaler.transform(X_test)
+    model = NeuralPredictor(
+        input_size=args.input_size,
+        hidden_size=args.hidden_size,
+        output_size=args.output_size,
+        learning_rate=args.lr,
+        epochs=args.epochs,
+        seed=args.seed,
+    )
+    if not args.quiet:
+        print("training")
+    model.train(X_train_norm, y_train, quiet=args.quiet)
+    preds = model.batch_predict(X_test_norm)
+    mae = float(np.mean(np.abs(y_test.ravel() - preds)))
+    if not args.quiet:
+        print("evaluation")
+        print(f"test_mae {mae:.6f}")
+        for i in range(min(10, X_test.shape[0])):
+            x = ", ".join(f"{v:.2f}" for v in X_test[i])
+            print(f"{x}\t{y_test[i,0]:.4f}\t{preds[i]:.4f}\t{abs(y_test[i,0]-preds[i]):.4f}")
+    if args.no_interactive:
+        return
+    if not args.quiet:
+        print("interactive mode")
+        print(f"enter {args.input_size} numbers separated by spaces or 'quit'")
     while True:
         try:
-            user_input = input("> ").strip()
-            if user_input.lower() == 'quit':
+            s = input("> ").strip()
+            if s.lower() == "quit":
                 break
-            
-            numbers = [float(x) for x in user_input.split()]
-            if len(numbers) != 3:
-                print("Please enter exactly 3 numbers")
+            values = [float(x) for x in s.split()]
+            if len(values) != args.input_size:
+                print(f"enter exactly {args.input_size} numbers")
                 continue
-            
-            normalized_inputs = predictor.normalize_data(numbers)
-            prediction = predictor.predict(normalized_inputs)
-            
-            print(f"Input: {numbers}")
-            print(f"Normalized: {[f'{x:.4f}' for x in normalized_inputs]}")
-            print(f"Prediction: {prediction:.6f}")
-            print()
-            
+            norm = scaler.transform(np.asarray([values], dtype=np.float64))[0]
+            pred = model.predict(norm.tolist())
+            print(f"prediction {pred:.6f}")
         except ValueError:
-            print("Invalid input. Please enter 3 numbers separated by spaces.")
+            print("invalid input")
         except KeyboardInterrupt:
             break
-    
-    print("Neural Predictor session ended.")
 
 if __name__ == "__main__":
-    main()
+    run_cli()
