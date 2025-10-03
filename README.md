@@ -1,6 +1,6 @@
 # Neural Predictor
 
-A lightweight neural network implementation for pattern prediction and regression tasks. Built from scratch in Python with NumPy for educational purposes and practical use.
+a lightweight neural network implementation for pattern prediction and regression tasks. Built from scratch in Python with NumPy for educational purposes and practical use.
 
 ## What it does
 
